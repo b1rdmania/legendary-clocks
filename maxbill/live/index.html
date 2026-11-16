@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Bill</title>
+<style>
+  :root{--wall:#faf9f7}
+  html,body{margin:0;height:100%;background:var(--wall);overflow:hidden}
+  body.idle{cursor:none}
+  canvas{display:block;width:100vw;height:100vh}
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Wall clock"></canvas>
+<script>
+/* Pre-rendered layers from build.py (3000px square, camera on the clock axis).
+   Hand sprites are 1440px squares centred on the arbor, pointing at 12. */
+const SRC = 3000, HAND = 1440, CLOCK_PX = 1565;          // clock diameter in source pixels
+const PX_PER_M = SRC / 0.575;                              // 72 mm lens at 1.15 m
+const SHADOW_DIR = [0.63, 0.77];                           // key light upper left -> shadow down right
+const LAYERS = {
+  plate: 'noglass.jpg', glass: 'glass.jpg',
+  hour: 'hour.png', minute: 'minute.png', second: 'second.png', cap: 'cap.png',
+  hourS: 'hour_s.png', minuteS: 'minute_s.png', secondS: 'second_s.png'
+};
+const LIFT = { hour: .0012, minute: .0024, second: .0034 }; // hand height above the dial (m)
+const GLASS = 0.7;                                          // glass reflection strength
+
+const img = {};
+const load = Object.entries(LAYERS).map(([k, f]) => new Promise((ok, err) => {
+  const i = new Image(); i.onload = () => { img[k] = i; ok(); }; i.onerror = err; i.src = f;
+}));
+
+const c = document.getElementById('c'), ctx = c.getContext('2d');
+const base = document.createElement('canvas'), bctx = base.getContext('2d');
+let W, H, DPR, s, cx, cy;
+
+function layout() {
+  DPR = Math.min(devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  c.width = base.width = Math.round(W * DPR); c.height = base.height = Math.round(H * DPR);
+  const D = Math.min(W, H) * 0.74 * DPR;                  // on-screen clock diameter
+  s = D / CLOCK_PX; cx = c.width / 2; cy = c.height / 2;
+  if (!img.plate) return;
+  // cache the static plate, feathered into the wall colour
+  bctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--wall');
+  bctx.fillRect(0, 0, base.width, base.height);
+  const P = SRC * s;
+  bctx.drawImage(img.plate, cx - P / 2, cy - P / 2, P, P);
+  const g = bctx.createRadialGradient(cx, cy, P * .36, cx, cy, P * .5);
+  const wall = bctx.fillStyle;
+  g.addColorStop(0, hexA(wall, 0)); g.addColorStop(1, hexA(wall, 1));
+  bctx.fillStyle = g; bctx.fillRect(0, 0, base.width, base.height);
+}
+function hexA(hex, a) {
+  const n = parseInt(hex.trim().slice(1), 16);
+  return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`;
+}
+
+function hand(key, angle, withShadow = true) {
+  const S = HAND * s;
+  if (withShadow) {
+    const d = LIFT[key] * 1.09 * PX_PER_M * s;
+    ctx.save(); ctx.globalAlpha = .42;
+    ctx.translate(cx + SHADOW_DIR[0] * d, cy + SHADOW_DIR[1] * d); ctx.rotate(angle);
+    ctx.drawImage(img[key + 'S'], -S / 2, -S / 2, S, S); ctx.restore();
+  }
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(angle);
+  ctx.drawImage(img[key], -S / 2, -S / 2, S, S); ctx.restore();
+}
+
+/* Quartz movement: the seconds hand steps once a second with a short, damped snap. */
+function snap(ms) {
+  const t = Math.min(ms / 110, 1);
+  return 1 + Math.sin(t * Math.PI * 1.5) * (1 - t) * 0.12 - (1 - t) ** 3;
+}
+function frame() {
+  const d = new Date(), h = d.getHours(), m = d.getMinutes(), sec = d.getSeconds(), ms = d.getMilliseconds();
+  const st = sec - 1 + snap(ms);
+  const TAU = Math.PI * 2;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(base, 0, 0);
+  hand('hour',   ((h % 12) + m / 60 + sec / 3600) * TAU / 12);
+  hand('minute', (m + st / 60) * TAU / 60);
+  hand('second', st * TAU / 60);
+  hand('cap', 0, false);
+  const P = SRC * s;
+  ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = GLASS;
+  ctx.drawImage(img.glass, cx - P / 2, cy - P / 2, P, P);
+  ctx.globalAlpha = 1;
+  requestAnimationFrame(frame);
+}
+
+/* full screen on double click or F, keep the screen awake, hide the cursor when idle */
+let lock = null, idle;
+async function full() {
+  try { document.fullscreenElement ? await document.exitFullscreen() : await document.documentElement.requestFullscreen(); } catch (e) {}
+  try { if (!lock && navigator.wakeLock) lock = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+addEventListener('dblclick', full);
+addEventListener('keydown', e => { if (e.key === 'f') full(); });
+addEventListener('mousemove', () => { document.body.classList.remove('idle'); clearTimeout(idle); idle = setTimeout(() => document.body.classList.add('idle'), 2000); });
+addEventListener('resize', layout);
+
+Promise.all(load).then(() => { layout(); requestAnimationFrame(frame); });
+</script>
+</body>
+</html>

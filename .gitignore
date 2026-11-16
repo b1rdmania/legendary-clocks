@@ -1,0 +1,6 @@
+# Blender renders (regenerate with studio/render_*.sh)
+studio/player/clocks/
+maxbill/*.png
+maxbill/live/*.png
+maxbill/live/*.jpg
+.DS_Store

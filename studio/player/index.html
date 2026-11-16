@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Legendary Clocks</title>
+<style>
+  :root{--wall:#c6c3bd}
+  html,body{margin:0;height:100%;background:var(--wall);overflow:hidden;transition:background .5s ease}
+  body.idle{cursor:none}
+  canvas{display:block;width:100vw;height:100vh;transition:opacity .3s ease}
+  canvas.out{opacity:0}
+  nav{position:fixed;left:0;right:0;bottom:calc(20px + env(safe-area-inset-bottom,0px));display:flex;justify-content:center;gap:6px;transition:opacity .6s}
+  body.idle nav{opacity:0}
+  nav button{width:22px;height:22px;border:0;padding:0;background:none;cursor:pointer;display:grid;place-items:center}
+  nav button::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--dot,#000);opacity:.25;transition:opacity .3s}
+  nav button[aria-current="true"]::before{opacity:.8}
+  nav button:focus-visible{outline:1px solid var(--dot,#000);border-radius:4px}
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Wall clock"></canvas>
+<nav id="dots" aria-label="Clocks"></nav>
+<script>
+/* Layers rendered by rig.py. Camera on the clock axis (72 mm at 1.15 m), so a 2D rotation of a
+   hand sprite is exact. Hand sprites are the centre 48% of the frame, pointing at 12. */
+
+/* Movements: each returns hand angles in turns (0..1) from the wall time. */
+const quartz = (t) => {                      // one step a second, short damped snap
+  const k = Math.min(t.ms / 110, 1);
+  const s = t.s + Math.sin(k * Math.PI * 1.5) * (1 - k) * 0.12 - (1 - k) ** 3;
+  return { h: ((t.h % 12) + t.m / 60 + t.s / 3600) / 12, m: (t.m + s / 60) / 60, s: s / 60 };
+};
+const hilfiker = (t) => {                    // seconds sweep in 58.5 s, rest at 12, minute hand jumps
+  const sec = Math.min((t.s + t.ms / 1000) / 58.5, 1);
+  const k = t.s === 0 ? Math.min(t.ms / 180, 1) : 1;
+  const jump = (1 - k) ** 2 * Math.sin(k * Math.PI * 2) * 0.004;
+  return { h: ((t.h % 12) + t.m / 60) / 12, m: t.m / 60 + jump, s: sec };
+};
+
+/* A look is one lighting set: its folder, wall colour, and the key light's shadow direction and slope. */
+const flat = (wall, glass) => [{ name: 'day', dir: '', wall, glass, sdir: [0.633, 0.774], slope: 1.093, sa: .42 }];
+const CLOCKS = [
+  { id: 'station', dot: '#fff', move: hilfiker, src: 4000, lift: { hour: .0012, minute: .0026, second: .0040 },
+    looks: [
+      { name: 'day',   dir: 'day/',   wall: '#7d8b93', glass: .5, sdir: [0.633, 0.774],  slope: 1.093, sa: .40 },
+      { name: 'dusk',  dir: 'dusk/',  wall: '#6f685a', glass: .5, sdir: [-0.949, 0.316], slope: 2.295, sa: .55 },
+      { name: 'night', dir: 'night/', wall: '#45473f', glass: .5, sdir: [0.731, -0.682], slope: 1.207, sa: .45 },
+    ] },
+  { id: 'rams', dot: '#000', move: quartz, src: 3000, size: .82, lift: { hour: .0012, minute: .0022, second: .0032 }, looks: flat('#fbf8f0', .6) },
+  { id: 'ball', dot: '#000', move: quartz, src: 3000, lift: { hour: .0026, minute: .0046, second: 0 }, looks: flat('#f8faee', 0) },
+  { id: 'bill', dot: '#000', move: quartz, src: 3000, lift: { hour: .0012, minute: .0024, second: .0034 }, looks: flat('#faf6ec', .7) },
+];
+
+/* Time of day -> look weights. Dusk light doubles as dawn. */
+const SCHEDULE = [[0, 'night'], [5.5, 'night'], [6.5, 'dusk'], [7.5, 'dusk'], [8.5, 'day'], [16.5, 'day'], [17.5, 'dusk'], [19, 'dusk'], [20, 'night'], [24, 'night']];
+let forced = null;                            // keys 1/2/3 force a look, 0 returns to the clock
+function weights(cl, d) {
+  const names = cl.looks.map(l => l.name);
+  const pick = n => Math.max(0, names.indexOf(n));
+  if (cl.looks.length === 1) return [[0, 1]];
+  if (forced) return [[pick(forced), 1]];
+  const h = d.getHours() + d.getMinutes() / 60;
+  for (let i = 0; i < SCHEDULE.length - 1; i++) {
+    const [h0, a] = SCHEDULE[i], [h1, b] = SCHEDULE[i + 1];
+    if (h >= h0 && h < h1) {
+      if (a === b) return [[pick(a), 1]];
+      const w = (h - h0) / (h1 - h0);
+      return [[pick(a), 1 - w], [pick(b), w]];
+    }
+  }
+  return [[0, 1]];
+}
+
+const c = document.getElementById('c'), ctx = c.getContext('2d');
+const mix = document.createElement('canvas'), mctx = mix.getContext('2d');
+let clock = null, W, H, s, cx, cy, DPR;
+
+function loadLook(cl, look) {
+  if (look.img) return Promise.resolve();
+  look.base = null;
+  const files = { plate: 'noglass.jpg', glass: 'glass.jpg', hour: 'hour.png', minute: 'minute.png', second: 'second.png', cap: 'cap.png',
+    hourS: 'hour_s.png', minuteS: 'minute_s.png', secondS: 'second_s.png', hourC: 'hour_c.png', minuteC: 'minute_c.png', secondC: 'second_c.png' };
+  const out = {};
+  return Promise.all(Object.entries(files).map(([k, f]) => new Promise(ok => {
+    const i = new Image(); i.onload = () => { out[k] = i; ok(); }; i.onerror = () => ok();   // contact shadows are optional
+    i.src = `clocks/${cl.id}/${look.dir}${f}`;
+  }))).then(() => { look.img = out.plate ? out : null; });   // a look without a plate is not rendered yet
+}
+
+function rgba(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`; }
+
+function layout() {
+  DPR = Math.min(devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  c.width = mix.width = Math.round(W * DPR); c.height = mix.height = Math.round(H * DPR);
+  cx = c.width / 2; cy = c.height / 2;
+  if (!clock) return;
+  const clockPx = 1565 * clock.src / 3000;                 // 300 mm clock diameter in source pixels
+  s = Math.min(W, H) * 0.74 * DPR / clockPx * (clock.size || 1);
+  for (const look of clock.looks) {                         // cache each look's static plate, feathered into its wall
+    if (!look.img) continue;
+    look.base = look.base || document.createElement('canvas');
+    look.base.width = c.width; look.base.height = c.height;
+    const b = look.base.getContext('2d'), P = clock.src * s;
+    b.fillStyle = look.wall; b.fillRect(0, 0, c.width, c.height);
+    b.drawImage(look.img.plate, cx - P / 2, cy - P / 2, P, P);
+    const g = b.createRadialGradient(cx, cy, P * .36, cx, cy, P * .5);
+    g.addColorStop(0, rgba(look.wall, 0)); g.addColorStop(1, rgba(look.wall, 1));
+    b.fillStyle = g; b.fillRect(0, 0, c.width, c.height);
+  }
+}
+
+function paint(g, look, a) {
+  const im = look.img, S = clock.src * 0.48 * s, pxm = clock.src / 0.575 * s;
+  g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+  g.drawImage(look.base, 0, 0);
+  const hand = (key, turns) => {
+    const r = turns * Math.PI * 2, d = (clock.lift[key] || 0) * look.slope * pxm;
+    const sh = (sprite, k, alpha) => {
+      if (!sprite) return;
+      g.save(); g.globalAlpha = alpha; g.translate(cx + look.sdir[0] * d * k, cy + look.sdir[1] * d * k); g.rotate(r);
+      g.drawImage(sprite, -S / 2, -S / 2, S, S); g.restore();
+    };
+    sh(im[key + 'S'], 1, look.sa);                          // soft key-light shadow
+    sh(im[key + 'C'], 0.3, 0.35);                           // tight contact shadow
+    g.save(); g.translate(cx, cy); g.rotate(r); g.drawImage(im[key], -S / 2, -S / 2, S, S); g.restore();
+  };
+  hand('hour', a.h); hand('minute', a.m); hand('second', a.s); hand('cap', 0);
+  const P = clock.src * s;
+  g.globalCompositeOperation = 'lighter'; g.globalAlpha = look.glass;
+  g.drawImage(im.glass, cx - P / 2, cy - P / 2, P, P);
+  g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+}
+
+let lastWall = '';
+function frame() {
+  if (clock) {
+    const d = new Date(), a = clock.move({ h: d.getHours(), m: d.getMinutes(), s: d.getSeconds(), ms: d.getMilliseconds() });
+    const ws = weights(clock, d).filter(([i]) => clock.looks[i].img);
+    if (ws.length) {
+      ws.sort((x, y) => y[1] - x[1]);
+      paint(ctx, clock.looks[ws[0][0]], a);
+      if (ws[1] && ws[1][1] > 0.004) {
+        paint(mctx, clock.looks[ws[1][0]], a);
+        ctx.globalAlpha = ws[1][1]; ctx.drawImage(mix, 0, 0); ctx.globalAlpha = 1;
+      }
+      const wall = clock.looks[ws[0][0]].wall;
+      if (wall !== lastWall) { document.documentElement.style.setProperty('--wall', wall); lastWall = wall; }
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+/* navigation: arrows, swipe, dots, #hash */
+const dots = document.getElementById('dots');
+CLOCKS.forEach(cl => { const b = document.createElement('button'); b.setAttribute('aria-label', cl.id); b.onclick = () => go(cl.id); dots.appendChild(b); });
+let busy = false;
+async function go(id) {
+  const cl = CLOCKS.find(x => x.id === id) || CLOCKS[0];
+  if (cl === clock || busy) return; busy = true;
+  if (location.hash !== '#' + cl.id) history.replaceState(null, '', '#' + cl.id);
+  const loaded = Promise.all(cl.looks.map(l => loadLook(cl, l)));
+  if (clock) { c.classList.add('out'); await new Promise(r => setTimeout(r, 300)); }
+  await loaded; clock = cl; lastWall = '';
+  document.documentElement.style.setProperty('--dot', cl.dot);
+  [...dots.children].forEach((b, i) => b.setAttribute('aria-current', CLOCKS[i] === cl));
+  layout(); c.classList.remove('out'); busy = false;
+  try { localStorage.setItem('clock', cl.id); } catch (e) {}
+}
+const step = n => go(CLOCKS[(CLOCKS.indexOf(clock) + n + CLOCKS.length) % CLOCKS.length].id);
+addEventListener('keydown', e => { if (e.key === 'ArrowRight') step(1); else if (e.key === 'ArrowLeft') step(-1); else if (e.key === 'f') full();
+  else if ('123'.includes(e.key) && e.key) { forced = ['day', 'dusk', 'night'][+e.key - 1]; }
+  else if (e.key === '0') forced = null; });
+let tx = null;
+addEventListener('touchstart', e => { tx = e.touches[0].clientX; }, { passive: true });
+addEventListener('touchend', e => { if (tx == null) return; const dx = e.changedTouches[0].clientX - tx; if (Math.abs(dx) > 50) step(dx < 0 ? 1 : -1); tx = null; });
+addEventListener('hashchange', () => go(location.hash.slice(1)));
+
+/* full screen, wake lock, idle cursor */
+let lock = null, idle;
+async function full() {
+  try { document.fullscreenElement ? await document.exitFullscreen() : await document.documentElement.requestFullscreen(); } catch (e) {}
+  try { if (!lock && navigator.wakeLock) lock = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+addEventListener('dblclick', full);
+function wake() { document.body.classList.remove('idle'); clearTimeout(idle); idle = setTimeout(() => document.body.classList.add('idle'), 2200); }
+['mousemove', 'touchstart', 'keydown'].forEach(e => addEventListener(e, wake, { passive: true }));
+addEventListener('resize', layout);
+
+let start = location.hash.slice(1);
+if (!start) { try { start = localStorage.getItem('clock') || ''; } catch (e) {} }
+wake(); go(start); requestAnimationFrame(frame);
+</script>
+</body>
+</html>
