@@ -191,6 +191,15 @@ spec = importlib.util.spec_from_file_location("clock", os.path.join(HERE, "clock
 clock = importlib.util.module_from_spec(spec); spec.loader.exec_module(clock)
 info = clock.build(sys.modules[__name__], HMS)     # returns {"wall": hex, "hands": {...}}
 
+# ---------- study treatment: rounder hand edges so the bevels catch a fine line of light
+if os.environ.get("TREATMENT") == "study":
+    for names in info["hands"].values():
+        for n in names:
+            o = sc.objects[n]
+            for md in o.modifiers:
+                if md.type == "BEVEL": md.segments = 4; md.limit_method = "ANGLE"
+            smooth(o, 30)
+
 # ---------- test renders: pose the hands at HMS (layer renders keep them at 12)
 if not LAYER and any(HMS):
     h, mi, se = HMS
@@ -211,8 +220,9 @@ else:
     obj("wall", bm, mat("wall", info.get("wall", "#c9c4ba"), rough=0.92, bump=info.get("wall_bump")))
 
 # ---------- lights: big soft key upper left (window), faint cool fill, soft round highlight
-def area(name, loc, size, power, color=(1, 1, 1), shape="SQUARE"):
+def area(name, loc, size, power, color=(1, 1, 1), shape="SQUARE", size_y=None):
     l = bpy.data.lights.new(name, "AREA"); l.size = size; l.energy = power; l.color = color; l.shape = shape
+    if size_y: l.shape = "RECTANGLE"; l.size_y = size_y
     o = bpy.data.objects.new(name, l); sc.collection.objects.link(o); o.location = loc
     o.rotation_euler = (Vector((0, 0, 0.03)) - Vector(loc)).to_track_quat("-Z", "Y").to_euler()
     return o
@@ -225,8 +235,10 @@ SETS = {   # key (loc, size, power, colour), fill, highlight, world (colour, str
   "night": dict(key=((-0.75, -0.7, 0.85), 0.45, 75, (1.0, 0.74, 0.48)), fill=((1.2, 1.0, 1.2), 2.0, 6, (0.5, 0.6, 1.0)),
                 strip=((-0.6, -0.4, 0.9), 0.3, 6, (1.0, 0.8, 0.6)), world=((0.12, 0.14, 0.22), 0.05), ev=0.1),
 }
-L = SETS[LIGHTING]
-key = area("key", *L["key"]); key.visible_glossy = False
+L = {**SETS[LIGHTING], **info.get("sets", {}).get(LIGHTING, {})}   # a clock may soften or recolour a set; keep key loc for the page's shadow maths
+key = area("key", *L["key"]); key.visible_glossy = bool(info.get("key_glossy"))
+for i, (loc, sx, sy, pw, col) in enumerate(L.get("softboxes", [])):   # broad shapes for metal to reflect
+    sb = area(f"softbox{i}", loc, sx, pw, col, size_y=sy); sb.visible_diffuse = False
 area("fill", *L["fill"])
 area("strip", *L["strip"], shape="DISK")
 world = bpy.data.worlds.new("w"); sc.world = world; world.use_nodes = True
@@ -239,6 +251,13 @@ print("SHADOW", LIGHTING, "dir", round(-kx / math.hypot(kx, ky), 3), round(ky / 
 cam = bpy.data.cameras.new("cam"); cam.lens = float(os.environ.get("LENS", 72))
 co = bpy.data.objects.new("cam", cam); sc.collection.objects.link(co); sc.camera = co
 co.location = (0, 0, 1.15)
+if os.environ.get("CAM"):   # editorial stills only: CAM="x,y,z;tx,ty,tz", FSTOP for depth of field. Never for layers.
+    loc, at = [Vector([float(v) for v in part.split(",")]) for part in os.environ["CAM"].split(";")]
+    co.location = loc; co.rotation_euler = (at - loc).to_track_quat("-Z", "Y").to_euler()
+    if os.environ.get("FSTOP"):
+        fp = Vector([float(v) for v in os.environ["FOCUS"].split(",")]) if os.environ.get("FOCUS") else at
+        cam.dof.use_dof = True; cam.dof.focus_distance = (fp - loc).dot((at - loc).normalized()); cam.dof.aperture_fstop = float(os.environ["FSTOP"])
+    cam.clip_start = 0.005
 
 # ---------- layer split
 HANDS = info["hands"]          # {"hour": [...names], "minute": [...], "second": [...], "cap": [...]}
@@ -251,6 +270,15 @@ if LAYER:
         else:
             o.hide_render = o.name not in HANDS.get(LAYER, [])
     sc.render.film_transparent = LAYER not in ("plate", "noglass")
+
+# ---------- glint lights skip the glass: the strip and softboxes light hands, bevels and metal, but the glass never mirrors them
+if os.environ.get("TREATMENT") == "study" and "glass" in sc.objects:
+    lit = bpy.data.collections.new("no_glass"); sc.collection.children.link(lit)
+    for o in list(sc.collection.objects):
+        if o.type == "MESH" and o.name != "glass": lit.objects.link(o)
+    for o in sc.objects:
+        if o.type == "LIGHT" and o.name != "key":
+            o.light_linking.receiver_collection = lit
 
 # ---------- render
 sc.render.engine = "CYCLES"
@@ -269,6 +297,30 @@ if LAYER and LAYER not in ("plate", "noglass") and os.environ.get("CROP"):
     sc.render.use_border = True; sc.render.use_crop_to_border = True
     sc.render.border_min_x = sc.render.border_min_y = m; sc.render.border_max_x = sc.render.border_max_y = 1 - m
 sc.render.resolution_x = sc.render.resolution_y = RES
-sc.render.filepath = OUT
-bpy.ops.render.render(write_still=True)
-print("WROTE", OUT)
+
+# ---------- hand shadow pass: the hand casts onto a shadow catcher at the dial, unseen, under one overhead disc
+# with the key's size and distance. The penumbra then matches the hand's height; the page offsets it along the key direction.
+if LAYER in HANDS and os.environ.get("SHADOWPASS"):
+    kd = (Vector(L["key"][0]) - Vector((0, 0, info["dial_z"]))).length
+    for o in sc.objects:
+        if o.type == "LIGHT" and o.name != "key": o.hide_render = True
+    key.location = (0, 0, info["dial_z"] + kd); key.rotation_euler = (0, 0, 0); key.data.shape = "DISK"
+    world.node_tree.nodes["Background"].inputs[1].default_value = 0
+    for n in HANDS[LAYER]: sc.objects[n].visible_camera = False
+    bm = bmesh.new(); bmesh.ops.create_grid(bm, x_segments=1, y_segments=1, size=0.3)
+    bmesh.ops.translate(bm, verts=bm.verts, vec=(0, 0, info["dial_z"] + 0.00002))
+    obj("catcher", bm, mat("catcher", "#ffffff")).is_shadow_catcher = True
+
+# ---------- angular samples: the light stays fixed while the hand turns, so each sample carries its own highlights
+N = int(os.environ.get("ANGLES", 0))
+if N and LAYER in HANDS:
+    base, ext = os.path.splitext(OUT)
+    for k in range(N):
+        for n in HANDS[LAYER]: sc.objects[n].rotation_euler.z = -k * TAU / N
+        sc.render.filepath = f"{base}_{k:03d}{ext}"
+        bpy.ops.render.render(write_still=True)
+    print("WROTE", base, N, "angles")
+else:
+    sc.render.filepath = OUT
+    bpy.ops.render.render(write_still=True)
+    print("WROTE", OUT)

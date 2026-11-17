@@ -21,5 +21,12 @@ def build(r, hms):
     r.bevel(r.disc("arbor", 0.0050, 0.0040, Z, HAND, 64), 0.0010, 3)
     r.bevel(r.disc("seccap", 0.0040, 0.0008, Z + 0.0046, RED, 64), 0.0003, 3)
     g = r.flat_glass(0.1390, 0.0400, AR); g.data.materials[0] = AR
-    return {"dial_z": 0.030, "wall": "#3d464c", "wall_bump": (40, 0.18, 400, 0.05),
+    info = {"dial_z": 0.030, "wall": "#3d464c", "wall_bump": (40, 0.18, 400, 0.05),
             "hands": {"hour": ["hour"], "minute": ["minute"], "second": ["second"], "cap": ["arbor", "seccap"]}}
+    if __import__("os").environ.get("TREATMENT") == "study":
+        AR.node_tree.nodes["Principled BSDF"].inputs["Specular IOR Level"].default_value = 0.14   # quieter glass, hands stay legible
+        # cool morning light: a larger key softens the far shadow while contact stays tight; more fill lifts the crescent.
+        # A small disc off-axis gives the bevels and the lacquered red a controlled glint; the flat glass cannot see it.
+        info["sets"] = {"day": dict(key=((-0.9, 1.1, 1.3), 0.8, 420, (0.97, 0.98, 1.0)), fill=((1.4, -0.6, 1.0), 2.6, 32, (0.92, 0.96, 1.0)),
+                                    strip=((-0.55, 0.85, 0.75), 0.18, 60, (1, 1, 1)), world=((0.62, 0.66, 0.72), 0.18))}
+    return info

@@ -4,3 +4,7 @@ maxbill/*.png
 maxbill/live/*.png
 maxbill/live/*.jpg
 .DS_Store
+studio/editorial/**/*.png
+studio/editorial/approval/*.mp4
+studio/editorial/approval/*.gif
+__pycache__/
