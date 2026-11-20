@@ -8,3 +8,4 @@ studio/editorial/**/*.png
 studio/editorial/approval/*.mp4
 studio/editorial/approval/*.gif
 __pycache__/
+mac/build/

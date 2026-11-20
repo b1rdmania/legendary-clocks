@@ -1,0 +1,19 @@
+{
+  "order": ["station", "bill", "jacobsen", "rams", "cifra", "ball"],
+  "shadow": {
+    "day":   { "dir": [0.633, 0.774], "slope": 1.093, "alpha": 0.40 },
+    "dusk":  { "dir": [-0.949, 0.316], "slope": 2.295, "alpha": 0.55 },
+    "night": { "dir": [0.731, -0.682], "slope": 1.207, "alpha": 0.45 }
+  },
+  "schedule": [[0, "night"], [5.5, "night"], [6.5, "dusk"], [7.5, "dusk"], [8.5, "day"], [16.5, "day"], [17.5, "dusk"], [19, "dusk"], [20, "night"], [24, "night"]],
+  "clocks": {
+    "station":  { "name": "Station",  "designer": "Hans Hilfiker", "year": 1944, "movement": "hilfiker", "lift": { "hour": 0.0012, "minute": 0.0026, "second": 0.0040 }, "glass": 0.5 },
+    "bill":     { "name": "Bill",     "designer": "Max Bill", "year": 1956, "movement": "quartz", "lift": { "hour": 0.0012, "minute": 0.0024, "second": 0.0034 }, "glass": 0.6 },
+    "jacobsen": { "name": "Jacobsen", "designer": "Arne Jacobsen", "year": 1942, "movement": "smooth", "lift": { "hour": 0.0012, "minute": 0.0024, "second": 0.0034 }, "glass": 0.6 },
+    "rams":     { "name": "Rams",     "designer": "Dieter Rams & Dietrich Lubs", "year": 1987, "movement": "quartz", "size": 0.82, "lift": { "hour": 0.0012, "minute": 0.0022, "second": 0.0032 }, "glass": 0.6 },
+    "cifra":    { "name": "Cifra",    "designer": "Gino Valle", "year": 1965, "movement": "smooth", "size": 1.25, "lift": {}, "glass": 0,
+                  "flip": { "z": 0.1205, "w": 0.0705, "h": 0.0585, "gap": 0.0012, "units": [-0.036, 0.036], "ink": { "day": "#efede6", "dusk": "#e6d6c2", "night": "#a89a86" }, "card": "#2a2b2d" } },
+    "ball":     { "name": "Ball",     "designer": "George Nelson studio", "year": 1948, "movement": "smooth", "lift": { "hour": 0.0026, "minute": 0.0046, "second": 0 }, "glass": 0 }
+  },
+  "view": { "lens": 72, "sprite": 0.48, "fitMetres": 0.30 }
+}
